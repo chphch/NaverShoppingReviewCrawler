@@ -9,6 +9,10 @@ import pandas as pd
 from selenium import webdriver
 
 
+class BlockedException(Exception):
+    ...
+
+
 NAVER_SHOPPING_CATALOG_URL = 'https://search.shopping.naver.com/catalog'
 XPATH_PRODUCT_NAME = '/html/body/div/div/div[2]/div[2]/div[1]/h2'
 XPATH_TABLIST = '/html/body/div/div/div[2]/div[2]/div[2]/div[3]/div[1]/ul'
@@ -25,7 +29,7 @@ def run(args: Namespace) -> List[Dict[str, Any]]:
     while True:
         try:
             return _run(args)
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, BlockedException):
             traceback.print_exc()
             return []
         except:
@@ -38,7 +42,7 @@ def run(args: Namespace) -> List[Dict[str, Any]]:
 def _run(args: Namespace) -> List[Dict[str, Any]]:
     chromedriver = open_chromedriver(args)
     try:
-        chromedriver.get(f'{NAVER_SHOPPING_CATALOG_URL}/{args.catalog_id}')
+        load_webpage(chromedriver)
         sleep(2)
         if args.sort_with == 'recent':
             review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION)
@@ -94,7 +98,8 @@ def run_all(args: Namespace, page_numbers: List[int]) -> pd.DataFrame:
 
 def get_info(args: Namespace) -> Tuple[str, int]:
     chromedriver = open_chromedriver(args)
-    chromedriver.get(f'{NAVER_SHOPPING_CATALOG_URL}/{args.catalog_id}')
+    load_webpage(chromedriver)
+    print(chromedriver.current_url)
     product_name = chromedriver.find_element_by_xpath(XPATH_PRODUCT_NAME).text
     tablist = chromedriver.find_element_by_xpath(XPATH_TABLIST)
     for tab in tablist.find_elements_by_xpath('./li'):
@@ -105,6 +110,12 @@ def get_info(args: Namespace) -> Tuple[str, int]:
         raise Exception('Cannot find 쇼핑몰리뷰 tab.')
     chromedriver.quit()
     return product_name, num_review
+
+
+def load_webpage(chromedriver: webdriver.Chrome):
+    chromedriver.get(f'{NAVER_SHOPPING_CATALOG_URL}/{args.catalog_id}')
+    if chromedriver.current_url == 'https://search.shopping.naver.com/blocked.html':
+        raise BlockedException()
 
 
 def open_chromedriver(args: Namespace) -> webdriver.Chrome:
