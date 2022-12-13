@@ -100,11 +100,14 @@ def get_info() -> Tuple[str, int]:
     return product_name, num_review
 
 
-def open_chromedriver(chromedriver_path: Optional[str]) -> webdriver.Chrome:
-    if chromedriver_path:
-        chromedriver = webdriver.Chrome(chromedriver_path)
+def open_chromedriver(args: Namespace) -> webdriver.Chrome:
+    chrome_options = webdriver.ChromeOptions()
+    if not args.headless:
+        chrome_options.add_argument('--headless')
+    if args.chromedriver_path:
+        chromedriver = webdriver.Chrome(args.chromedriver_path, chrome_options=chrome_options)
     else:
-        chromedriver = webdriver.Chrome()
+        chromedriver = webdriver.Chrome(chrome_options=chrome_options)
     chromedriver.minimize_window()
     chromedriver.implicitly_wait(chromedriver_wait_time.value)
     return chromedriver
@@ -121,6 +124,7 @@ def parse_args() -> Namespace:
     parser.add_argument('-m', '--max-page', type=int)
     parser.add_argument('-o', '--out-path', type=str,
                         help='The default path is "out/<PRODUCT_NAME>.xlsx"')
+    parser.add_argument('-h', '--headless', action='store_true')
     args = parser.parse_args()
     return args
 
