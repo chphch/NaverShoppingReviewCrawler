@@ -108,13 +108,13 @@ def get_info(args: Namespace) -> Tuple[str, int]:
 
 
 def open_chromedriver(args: Namespace) -> webdriver.Chrome:
-    chrome_options = webdriver.ChromeOptions()
+    options = webdriver.ChromeOptions()
     if not args.show_chrome_window:
-        chrome_options.add_argument('--headless')
+        options.add_argument('--headless')
     if args.chromedriver_path:
-        chromedriver = webdriver.Chrome(args.chromedriver_path, chrome_options=chrome_options)
+        chromedriver = webdriver.Chrome(args.chromedriver_path, options=options)
     else:
-        chromedriver = webdriver.Chrome(chrome_options=chrome_options)
+        chromedriver = webdriver.Chrome(options=options)
     chromedriver.minimize_window()
     chromedriver.implicitly_wait(chromedriver_wait_time.value)
     return chromedriver
