@@ -1,23 +1,21 @@
 import traceback
 from time import sleep
-from itertools import repeat
 from multiprocessing import Pool, RawValue
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 from argparse import ArgumentParser, Namespace
 
 import tqdm
-import numpy as np
 import pandas as pd
 from selenium import webdriver
 
 
 NAVER_SHOPPING_CATALOG_URL = 'https://search.shopping.naver.com/catalog'
 XPATH_PRODUCT_NAME = '/html/body/div/div/div[2]/div[2]/div[1]/h2'
-XPATH_NUM_REVIEW = '/html/body/div/div/div[2]/div[2]/div[2]/div[3]/div[1]/ul/li[3]/a/em'
-XPATH_REVIEW_SECTION = '/html/body/div/div/div[2]/div[2]/div[2]/div[3]/div[5]'
-XPATH_SORT_BUTTON_RECENT = f'{XPATH_REVIEW_SECTION}/div[2]/div[1]/div[1]/a[2]'
-XPATH_PAGINATION = f'{XPATH_REVIEW_SECTION}/div[3]'
-XPATH_REVIEW_ITEMS = f'{XPATH_REVIEW_SECTION}/ul/li'
+XPATH_TABLIST = '/html/body/div/div/div[2]/div[2]/div[2]/div[3]/div[1]/ul'
+ID_REVIEW_SECTION = 'section_review'
+XPATH_SORT_BUTTON_RECENT = f'./div[2]/div[1]/div[1]/a[2]' # Relative to id=review_section
+XPATH_PAGINATION = f'./div[3]'                            # Relative to id=review_section
+XPATH_REVIEW_ITEMS = f'./ul/li'                           # Relative to id=review_section
 
 
 chromedriver_wait_time = RawValue('i', 4)
@@ -38,12 +36,13 @@ def run(args: Namespace) -> List[Dict[str, Any]]:
 
 
 def _run(args: Namespace) -> List[Dict[str, Any]]:
-    chromedriver = open_chromedriver(args.chromedriver_path)
+    chromedriver = open_chromedriver(args)
     try:
         chromedriver.get(f'{NAVER_SHOPPING_CATALOG_URL}/{args.catalog_id}')
         sleep(2)
         if args.sort_with == 'recent':
-            chromedriver.find_element_by_xpath(XPATH_SORT_BUTTON_RECENT).click()
+            review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION)
+            review_section.find_element_by_xpath(XPATH_SORT_BUTTON_RECENT).click()
             sleep(1)
         goto_page(chromedriver, args.page_number)
         return crawl_review_items(chromedriver)
@@ -52,7 +51,8 @@ def _run(args: Namespace) -> List[Dict[str, Any]]:
 
 
 def goto_page(chromedriver: webdriver.Chrome, page_number: int) -> None:
-    pagination = chromedriver.find_element_by_xpath(XPATH_PAGINATION)
+    review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION)
+    pagination = review_section.find_element_by_xpath(XPATH_PAGINATION)
     if page_number < 11:
         pagination.find_element_by_xpath(f'./a[{page_number}]').click()
     else:
@@ -69,7 +69,8 @@ def goto_page(chromedriver: webdriver.Chrome, page_number: int) -> None:
 def crawl_review_items(chromedriver: webdriver.Chrome) -> List[Dict[str, Any]]:
     items = []
     sleep(2)
-    review_items = chromedriver.find_elements_by_xpath(XPATH_REVIEW_ITEMS)
+    review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION)
+    review_items = review_section.find_elements_by_xpath(XPATH_REVIEW_ITEMS)
     assert len(review_items) == 20
     for item in review_items:
         star = int(item.find_element_by_xpath('./div[1]/span[1]').text.replace('평점', ''))
@@ -88,21 +89,27 @@ def run_all(args: Namespace, page_numbers: List[int]) -> pd.DataFrame:
     with Pool(args.cpu_count) as pool:
         reviews_2d = tqdm.tqdm(pool.imap(run, args_list), total=len(page_numbers))
         review_list = [r for reviews_1d in reviews_2d for r in reviews_1d]
-    return pd.DataFrame(review_list, index=np.arange(len(review_list)))
+    return pd.DataFrame(review_list)
 
 
-def get_info() -> Tuple[str, int]:
-    chromedriver = open_chromedriver(args.chromedriver_path)
+def get_info(args: Namespace) -> Tuple[str, int]:
+    chromedriver = open_chromedriver(args)
     chromedriver.get(f'{NAVER_SHOPPING_CATALOG_URL}/{args.catalog_id}')
     product_name = chromedriver.find_element_by_xpath(XPATH_PRODUCT_NAME).text
-    num_review = int(chromedriver.find_element_by_xpath(XPATH_NUM_REVIEW).text.replace(',', ''))
+    tablist = chromedriver.find_element_by_xpath(XPATH_TABLIST)
+    for tab in tablist.find_elements_by_xpath('./li'):
+        if '쇼핑몰리뷰' in tab.text:
+            num_review = int(tab.find_element_by_xpath('./a/em').text.replace(',', ''))
+            break
+    else:
+        raise Exception('Cannot find 쇼핑몰리뷰 tab.')
     chromedriver.quit()
     return product_name, num_review
 
 
 def open_chromedriver(args: Namespace) -> webdriver.Chrome:
     chrome_options = webdriver.ChromeOptions()
-    if not args.headless:
+    if not args.show_chrome_window:
         chrome_options.add_argument('--headless')
     if args.chromedriver_path:
         chromedriver = webdriver.Chrome(args.chromedriver_path, chrome_options=chrome_options)
@@ -124,16 +131,16 @@ def parse_args() -> Namespace:
     parser.add_argument('-m', '--max-page', type=int)
     parser.add_argument('-o', '--out-path', type=str,
                         help='The default path is "out/<PRODUCT_NAME>.xlsx"')
-    parser.add_argument('-h', '--headless', action='store_true')
+    parser.add_argument('-w', '--show-chrome-window', action='store_true')
     args = parser.parse_args()
     return args
 
 
 if __name__ == '__main__':
     args = parse_args()
-    product_name, num_review = get_info()
+    product_name, num_review = get_info(args)
     if not args.max_page:
         args.max_page = min((num_review // 20) + 1, 100)
-    df = run_all(args, np.arange(1, args.max_page + 1))
+    df = run_all(args, list(range(1, args.max_page + 1)))
     filepath  = args.out_path if args.out_path else f'out/{product_name}.xlsx'
-    df.to_excel(filepath)
+    df.to_excel(filepath, index=False)
