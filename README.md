@@ -11,6 +11,12 @@ This project is developed and tested with python3.9.
 ```bash
 python -m pip install -r requirements.txt
 ```
+or
+```bash
+conda create python=3.9 -n nscrawl --no-default-packages -y
+conda activate nscrawl
+conda install numpy pandas selenium openpyxl -y
+```
 
 ## Getting Started
 
