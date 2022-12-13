@@ -2,7 +2,7 @@ import traceback
 from time import sleep
 from itertools import repeat
 from multiprocessing import Pool, RawValue
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from argparse import ArgumentParser, Namespace
 
 import numpy as np
@@ -12,6 +12,7 @@ from selenium import webdriver
 
 NAVER_SHOPPING_CATALOG_URL = 'https://search.shopping.naver.com/catalog'
 XPATH_PRODUCT_NAME = '/html/body/div/div/div[2]/div[2]/div[1]/h2'
+XPATH_NUM_REVIEW = '/html/body/div/div/div[2]/div[2]/div[2]/div[3]/div[1]/ul/li[3]/a/em'
 XPATH_REVIEW_SECTION = '/html/body/div/div/div[2]/div[2]/div[2]/div[3]/div[5]'
 XPATH_SORT_BUTTON_RECENT = f'{XPATH_REVIEW_SECTION}/div[2]/div[1]/div[1]/a[2]'
 XPATH_PAGINATION = f'{XPATH_REVIEW_SECTION}/div[3]'
@@ -85,12 +86,13 @@ def run_all(args: Namespace, page_numbers: List[int]) -> pd.DataFrame:
     return pd.DataFrame(item_list, index=np.arange(len(item_list)))
 
 
-def get_product_name() -> str:
+def get_info() -> Tuple[str, int]:
     chromedriver = open_chromedriver(args.chromedriver_path)
     chromedriver.get(f'{NAVER_SHOPPING_CATALOG_URL}/{args.catalog_id}')
     product_name = chromedriver.find_element_by_xpath(XPATH_PRODUCT_NAME).text
+    num_review = int(chromedriver.find_element_by_xpath(XPATH_NUM_REVIEW).text.replace(',', ''))
     chromedriver.quit()
-    return product_name
+    return product_name, num_review
 
 
 def open_chromedriver(chromedriver_path: Optional[str]) -> webdriver.Chrome:
@@ -111,7 +113,7 @@ def parse_args() -> Namespace:
     parser.add_argument('-s', '--sort-with', type=str, choices=['ranking', 'recent'],
                         default='recent')
     parser.add_argument('-c', '--cpu-count', type=int, default=1)
-    parser.add_argument('-m', '--max-page', type=int, default=1)
+    parser.add_argument('-m', '--max-page', type=int)
     parser.add_argument('-o', '--out-path', type=str,
                         help='The default path is "out/<PRODUCT_NAME>.xlsx"')
     args = parser.parse_args()
@@ -120,7 +122,9 @@ def parse_args() -> Namespace:
 
 if __name__ == '__main__':
     args = parse_args()
-    product_name = get_product_name()
+    product_name, num_review = get_info()
+    if not args.max_page:
+        args.max_page = min((num_review // 20) + 1, 100)
     df = run_all(args, np.arange(1, args.max_page + 1))
     filepath  = args.out_path if args.out_path else f'out/{product_name}.xlsx'
     df.to_excel(filepath)
