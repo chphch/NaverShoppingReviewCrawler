@@ -15,7 +15,7 @@ or
 ```bash
 conda create python=3.9 -n nscrawl --no-default-packages -y
 conda activate nscrawl
-conda install numpy pandas selenium openpyxl -y
+conda install numpy pandas selenium openpyxl tqdm -y
 ```
 
 ## Getting Started

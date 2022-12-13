@@ -5,6 +5,7 @@ from multiprocessing import Pool, RawValue
 from typing import Any, Dict, List, Optional, Tuple
 from argparse import ArgumentParser, Namespace
 
+import tqdm
 import numpy as np
 import pandas as pd
 from selenium import webdriver
@@ -22,22 +23,21 @@ XPATH_REVIEW_ITEMS = f'{XPATH_REVIEW_SECTION}/ul/li'
 chromedriver_wait_time = RawValue('i', 4)
 
 
-def run(args: Namespace, page_index: int) -> List[Dict[str, Any]]:
+def run(args: Namespace) -> List[Dict[str, Any]]:
     while True:
         try:
-            print(f'Crawling page {page_index}/{args.max_page}.')
-            return _run(args, page_index)
+            return _run(args)
         except KeyboardInterrupt:
             traceback.print_exc()
             return []
         except:
             traceback.print_exc()
-            print(f'Exception from page index {page_index}.')
+            print(f'Exception from page index {args.page_number}.')
             chromedriver_wait_time.value += 1
             print(f'chromedriver wait_time is increased to {chromedriver_wait_time.value}.')
 
 
-def _run(args: Namespace, page_index: int) -> List[Dict[str, Any]]:
+def _run(args: Namespace) -> List[Dict[str, Any]]:
     chromedriver = open_chromedriver(args.chromedriver_path)
     try:
         chromedriver.get(f'{NAVER_SHOPPING_CATALOG_URL}/{args.catalog_id}')
@@ -45,25 +45,25 @@ def _run(args: Namespace, page_index: int) -> List[Dict[str, Any]]:
         if args.sort_with == 'recent':
             chromedriver.find_element_by_xpath(XPATH_SORT_BUTTON_RECENT).click()
             sleep(1)
-        goto_page(chromedriver, page_index)
+        goto_page(chromedriver, args.page_number)
         return crawl_review_items(chromedriver)
     finally:
         chromedriver.quit()
 
 
-def goto_page(chromedriver: webdriver.Chrome, page_index: int) -> None:
+def goto_page(chromedriver: webdriver.Chrome, page_number: int) -> None:
     pagination = chromedriver.find_element_by_xpath(XPATH_PAGINATION)
-    if page_index < 11:
-        pagination.find_element_by_xpath(f'./a[{page_index}]').click()
+    if page_number < 11:
+        pagination.find_element_by_xpath(f'./a[{page_number}]').click()
     else:
-        for i in range((page_index - 1) // 10):
+        for i in range((page_number - 1) // 10):
             if i == 0:
                 pagination.find_element_by_xpath(f'./a[11]').click()
             else:
                 pagination.find_element_by_xpath(f'./a[12]').click()
             sleep(1)
-        if (page_index - 1) % 10 > 1:
-            pagination.find_element_by_xpath(f'./a[{page_index % 10 + 1}]').click()
+        if (page_number - 1) % 10 > 1:
+            pagination.find_element_by_xpath(f'./a[{page_number % 10 + 1}]').click()
 
 
 def crawl_review_items(chromedriver: webdriver.Chrome) -> List[Dict[str, Any]]:
@@ -80,10 +80,15 @@ def crawl_review_items(chromedriver: webdriver.Chrome) -> List[Dict[str, Any]]:
 
 
 def run_all(args: Namespace, page_numbers: List[int]) -> pd.DataFrame:
+    args_list = []
+    for page_number in page_numbers:
+        args_page = Namespace(**vars(args))
+        args_page.page_number = page_number
+        args_list.append(args_page)
     with Pool(args.cpu_count) as pool:
-        item_list = \
-            [it for items in pool.starmap(run, zip(repeat(args), page_numbers)) for it in items]
-    return pd.DataFrame(item_list, index=np.arange(len(item_list)))
+        reviews_2d = tqdm.tqdm(pool.imap(run, args_list), total=len(page_numbers))
+        review_list = [r for reviews_1d in reviews_2d for r in reviews_1d]
+    return pd.DataFrame(review_list, index=np.arange(len(review_list)))
 
 
 def get_info() -> Tuple[str, int]:
