@@ -8,6 +8,9 @@ from argparse import Action, ArgumentError, ArgumentParser, Namespace
 import tqdm
 import pandas as pd
 from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.wait import WebDriverWait
+from selenium.webdriver.support.expected_conditions import element_to_be_clickable
 from selenium.webdriver.common.keys import Keys
 
 
@@ -43,9 +46,9 @@ XPATH_SORT_BUTTON_RECENT_DICT = { # Relative to review section
     'shopping': './div[2]/div[1]/div[1]/a[2]',
     'brand': './div/div[3]/div[1]/div[1]/ul/li[2]/a'
 }
-XPATH_PAGINATION_BUTTONS_DICT = { # Relative to review section
-    'shopping': './div[3]/a',
-    'brand': './div/div[3]/div[2]/div/div/a',
+XPATH_FORMAT_PAGINATION_BUTTON = {
+    'shopping': '//*[@id="section_review"]/div[3]/a[{index}]',
+    'brand': '//*[@id="REVIEW"]/div/div[3]/div[2]/div/div/a[{index}]',
 }
 XPATH_REVIEW_ITEMS_DICT = { # Relative to review section
     'shopping': './ul/li',
@@ -108,20 +111,23 @@ def _run(args: Namespace) -> List[Dict[str, Any]]:
 
 
 def goto_page(chromedriver: webdriver.Chrome, args: Namespace) -> None:
-    review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION_DICT[args.subdomain])
-    pagination_buttons = review_section.find_elements_by_xpath(
-        XPATH_PAGINATION_BUTTONS_DICT[args.subdomain])
     if args.page_number < 11:
-        pagination_buttons[args.page_number - 1].send_keys(Keys.ENTER)
+        click_pagination_button(chromedriver, args, args.page_number)
     else:
         for i in range((args.page_number - 1) // 10):
             if i == 0:
-                pagination_buttons[10].send_keys(Keys.ENTER)
+                click_pagination_button(chromedriver, args, 11)
             else:
-                pagination_buttons[11].send_keys(Keys.ENTER)
-            sleep(1)
+                click_pagination_button(chromedriver, args, 12)
         if (args.page_number - 1) % 10 > 1:
-            pagination_buttons[args.page_number % 10].send_keys(Keys.ENTER)
+            click_pagination_button(chromedriver, args, args.page_number % 10 + 1)
+
+
+def click_pagination_button(chromedriver: webdriver.Chrome, args: Namespace, index: int) -> None:
+    wait = WebDriverWait(chromedriver, 10)
+    xpath = XPATH_FORMAT_PAGINATION_BUTTON[args.subdomain].format(index=index)
+    button = wait.until(element_to_be_clickable((By.XPATH, xpath)))
+    button.click()
 
 
 def crawl_review_items(chromedriver: webdriver.Chrome, args: Namespace) -> List[Dict[str, Any]]:
