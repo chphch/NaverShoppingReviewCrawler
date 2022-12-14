@@ -1,7 +1,6 @@
 import re
 import traceback
-from time import sleep
-from multiprocessing import Pool, RawValue
+from multiprocessing import Pool
 from typing import Any, Dict, List, Tuple
 from argparse import Action, ArgumentError, ArgumentParser, Namespace
 
@@ -9,13 +8,17 @@ import tqdm
 import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
 from selenium.webdriver.support.wait import WebDriverWait
-from selenium.webdriver.support.expected_conditions import element_to_be_clickable
-from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.expected_conditions \
+    import visibility_of_all_elements_located, element_to_be_clickable
 
 
 class BlockedException(Exception):
     ...
+
+
+WEB_DRIVE_WAIT_IGNORED_EXCEPTION = [NoSuchElementException, StaleElementReferenceException]
 
 
 URL_PATTERNS = {
@@ -42,17 +45,17 @@ ID_REVIEW_SECTION_DICT = {
     'shopping': 'section_review',
     'brand': 'REVIEW',
 }
-XPATH_SORT_BUTTON_RECENT_DICT = { # Relative to review section
-    'shopping': './div[2]/div[1]/div[1]/a[2]',
-    'brand': './div/div[3]/div[1]/div[1]/ul/li[2]/a'
+XPATH_SORT_BUTTON_RECENT_DICT = {
+    'shopping': '//*[@id="section_review"]/div[2]/div[1]/div[1]/a[2]',
+    'brand': '//*[@id="REVIEW"]/div/div[3]/div[1]/div[1]/ul/li[2]/a'
 }
 XPATH_FORMAT_PAGINATION_BUTTON = {
     'shopping': '//*[@id="section_review"]/div[3]/a[{index}]',
     'brand': '//*[@id="REVIEW"]/div/div[3]/div[2]/div/div/a[{index}]',
 }
-XPATH_REVIEW_ITEMS_DICT = { # Relative to review section
-    'shopping': './ul/li',
-    'brand': './div/div[3]/div[2]/ul/li',
+XPATH_REVIEW_ITEMS_DICT = {
+    'shopping': '//*[@id="section_review"]/ul/li',
+    'brand': '//*[@id="REVIEW"]/div/div[3]/div[2]/ul/li',
 }
 XPATH_REVIEW_STAR_DICT = { # Relative to review item
     'shopping': './div[1]/span[1]',
@@ -72,9 +75,6 @@ BLOCKED_URL = {
 }
 
 
-chromedriver_wait_time = RawValue('i', 4)
-
-
 def run(args: Namespace) -> List[Dict[str, Any]]:
     while True:
         try:
@@ -85,21 +85,14 @@ def run(args: Namespace) -> List[Dict[str, Any]]:
         except:
             traceback.print_exc()
             print(f'Exception from page index {args.page_number}.')
-            chromedriver_wait_time.value += 1
-            print(f'chromedriver wait_time is increased to {chromedriver_wait_time.value}.')
 
 
 def _run(args: Namespace) -> List[Dict[str, Any]]:
     chromedriver = open_chromedriver(args)
     try:
         load_webpage(chromedriver, args)
-        sleep(2)
         if args.sort_with == 'recent':
-            review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION_DICT[args.subdomain])
-            sort_button = review_section.find_element_by_xpath(
-                XPATH_SORT_BUTTON_RECENT_DICT[args.subdomain])
-            sort_button.send_keys(Keys.ENTER)
-            sleep(1)
+            wait_and_click_button(chromedriver, XPATH_SORT_BUTTON_RECENT_DICT[args.subdomain])
         goto_page(chromedriver, args)
         review_items = crawl_review_items(chromedriver, args)
         chromedriver.quit()
@@ -124,20 +117,25 @@ def goto_page(chromedriver: webdriver.Chrome, args: Namespace) -> None:
 
 
 def click_pagination_button(chromedriver: webdriver.Chrome, args: Namespace, index: int) -> None:
-    wait = WebDriverWait(chromedriver, 10)
     xpath = XPATH_FORMAT_PAGINATION_BUTTON[args.subdomain].format(index=index)
-    button = wait.until(element_to_be_clickable((By.XPATH, xpath)))
-    button.click()
+    wait_and_click_button(chromedriver, xpath)
+
+
+def wait_and_click_button(chromedriver: webdriver.Chrome, xpath: str) -> None:
+    wait = WebDriverWait(chromedriver, 10, ignored_exceptions=WEB_DRIVE_WAIT_IGNORED_EXCEPTION)
+    element = wait.until(element_to_be_clickable((By.XPATH, xpath)))
+    element.click()
 
 
 def crawl_review_items(chromedriver: webdriver.Chrome, args: Namespace) -> List[Dict[str, Any]]:
-    items = []
-    sleep(2)
-    review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION_DICT[args.subdomain])
-    review_items = review_section.find_elements_by_xpath(XPATH_REVIEW_ITEMS_DICT[args.subdomain])
+    wait = WebDriverWait(chromedriver, 10, ignored_exceptions=WEB_DRIVE_WAIT_IGNORED_EXCEPTION)
+    locator = (By.XPATH, XPATH_REVIEW_ITEMS_DICT[args.subdomain])
+    review_items = wait.until(visibility_of_all_elements_located(locator))
     assert len(review_items) == 20
+    items = []
     for item in review_items:
-        star = int(item.find_element_by_xpath(XPATH_REVIEW_STAR_DICT[args.subdomain]).text.replace('평점', ''))
+        star_text = item.find_element_by_xpath(XPATH_REVIEW_STAR_DICT[args.subdomain]).text
+        star = int(star_text.replace('평점', ''))
         date = item.find_element_by_xpath(XPATH_REVIEW_DATE_DICT[args.subdomain]).text
         review = item.find_element_by_xpath(XPATH_REVIEW_TEXT_DICT[args.subdomain]).text
         items.append({'star': star, 'date': date, 'text': review})
@@ -182,6 +180,7 @@ def load_webpage(chromedriver: webdriver.Chrome, args: Namespace):
 
 def open_chromedriver(args: Namespace) -> webdriver.Chrome:
     options = webdriver.ChromeOptions()
+    options.add_experimental_option('excludeSwitches', ['enable-logging'])
     if not args.debug:
         options.add_argument('--headless')
     if args.chromedriver_path:
@@ -189,7 +188,6 @@ def open_chromedriver(args: Namespace) -> webdriver.Chrome:
     else:
         chromedriver = webdriver.Chrome(options=options)
     chromedriver.minimize_window()
-    chromedriver.implicitly_wait(chromedriver_wait_time.value)
     return chromedriver
 
 
