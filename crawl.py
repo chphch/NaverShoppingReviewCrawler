@@ -1,25 +1,72 @@
+import re
 import traceback
 from time import sleep
 from multiprocessing import Pool, RawValue
 from typing import Any, Dict, List, Tuple
-from argparse import ArgumentParser, Namespace
+from argparse import Action, ArgumentError, ArgumentParser, Namespace
 
 import tqdm
 import pandas as pd
 from selenium import webdriver
+from selenium.webdriver.common.keys import Keys
 
 
 class BlockedException(Exception):
     ...
 
 
-NAVER_SHOPPING_CATALOG_URL = 'https://search.shopping.naver.com/catalog'
-XPATH_PRODUCT_NAME = '/html/body/div/div/div[2]/div[2]/div[1]/h2'
-XPATH_TABLIST = '/html/body/div/div/div[2]/div[2]/div[2]/div[3]/div[1]/ul'
-ID_REVIEW_SECTION = 'section_review'
-XPATH_SORT_BUTTON_RECENT = f'./div[2]/div[1]/div[1]/a[2]' # Relative to id=review_section
-XPATH_PAGINATION = f'./div[3]'                            # Relative to id=review_section
-XPATH_REVIEW_ITEMS = f'./ul/li'                           # Relative to id=review_section
+URL_PATTERNS = {
+    'shopping': re.compile(r'^https://search.shopping.naver.com/catalog/[0-9]+(:?$|\?)'),
+    'brand': re.compile(r'^https://brand.naver.com/pupping/products/[0-9]+(:?$|\?)'),
+}
+XPATH_PRODUCT_NAME_DICT = {
+    'shopping': '/html/body/div/div/div[2]/div[2]/div[1]/h2',
+    'brand': '//*[@id="content"]/div/div[2]/div[2]/fieldset/div[1]/div[1]/h3',
+}
+XPATH_TABS_DICT = {
+    'shopping': '/html/body/div/div/div[2]/div[2]/div[2]/div[3]/div[1]/ul/li',
+    'brand': '//*[@id="content"]/div/div[3]/div[3]/ul/li',
+}
+TEXT_REVIEW_TAB_DICT = {
+    'shopping': '쇼핑몰리뷰',
+    'brand': '리뷰',
+}
+XPATH_NUM_REVIEW_DICT = {
+    'shopping': './a/em',
+    'brand': './a/span'
+}
+ID_REVIEW_SECTION_DICT = {
+    'shopping': 'section_review',
+    'brand': 'REVIEW',
+}
+XPATH_SORT_BUTTON_RECENT_DICT = { # Relative to review section
+    'shopping': './div[2]/div[1]/div[1]/a[2]',
+    'brand': './div/div[3]/div[1]/div[1]/ul/li[2]/a'
+}
+XPATH_PAGINATION_BUTTONS_DICT = { # Relative to review section
+    'shopping': './div[3]/a',
+    'brand': './div/div[3]/div[2]/div/div/a',
+}
+XPATH_REVIEW_ITEMS_DICT = { # Relative to review section
+    'shopping': './ul/li',
+    'brand': './div/div[3]/div[2]/ul/li',
+}
+XPATH_REVIEW_STAR_DICT = { # Relative to review item
+    'shopping': './div[1]/span[1]',
+    'brand': './div/div/div/div[1]/div/div[1]/div[1]/div[2]/div[1]/em'
+}
+XPATH_REVIEW_DATE_DICT = { # Relative to review item
+    'shopping': './div[1]/span[4]',
+    'brand': './div/div/div/div[1]/div/div[1]/div[1]/div[2]/div[2]/span',
+}
+XPATH_REVIEW_TEXT_DICT = { # Relative to review item
+    'shopping': './div[2]/div[1]',
+    'brand': './div/div/div/div[1]/div/div[1]/div[2]/div/span',
+}
+BLOCKED_URL = {
+    'shopping': 'https://search.shopping.naver.com/blocked.html',
+    'brand': None,
+}
 
 
 chromedriver_wait_time = RawValue('i', 4)
@@ -42,45 +89,52 @@ def run(args: Namespace) -> List[Dict[str, Any]]:
 def _run(args: Namespace) -> List[Dict[str, Any]]:
     chromedriver = open_chromedriver(args)
     try:
-        load_webpage(chromedriver)
+        load_webpage(chromedriver, args)
         sleep(2)
         if args.sort_with == 'recent':
-            review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION)
-            review_section.find_element_by_xpath(XPATH_SORT_BUTTON_RECENT).click()
+            review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION_DICT[args.subdomain])
+            sort_button = review_section.find_element_by_xpath(
+                XPATH_SORT_BUTTON_RECENT_DICT[args.subdomain])
+            sort_button.send_keys(Keys.ENTER)
             sleep(1)
-        goto_page(chromedriver, args.page_number)
-        return crawl_review_items(chromedriver)
-    finally:
+        goto_page(chromedriver, args)
+        review_items = crawl_review_items(chromedriver, args)
         chromedriver.quit()
+        return review_items
+    except Exception as e:
+        if not args.debug:
+            chromedriver.quit()
+        raise e
 
 
-def goto_page(chromedriver: webdriver.Chrome, page_number: int) -> None:
-    review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION)
-    pagination = review_section.find_element_by_xpath(XPATH_PAGINATION)
-    if page_number < 11:
-        pagination.find_element_by_xpath(f'./a[{page_number}]').click()
+def goto_page(chromedriver: webdriver.Chrome, args: Namespace) -> None:
+    review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION_DICT[args.subdomain])
+    pagination_buttons = review_section.find_elements_by_xpath(
+        XPATH_PAGINATION_BUTTONS_DICT[args.subdomain])
+    if args.page_number < 11:
+        pagination_buttons[args.page_number - 1].send_keys(Keys.ENTER)
     else:
-        for i in range((page_number - 1) // 10):
+        for i in range((args.page_number - 1) // 10):
             if i == 0:
-                pagination.find_element_by_xpath(f'./a[11]').click()
+                pagination_buttons[10].send_keys(Keys.ENTER)
             else:
-                pagination.find_element_by_xpath(f'./a[12]').click()
+                pagination_buttons[11].send_keys(Keys.ENTER)
             sleep(1)
-        if (page_number - 1) % 10 > 1:
-            pagination.find_element_by_xpath(f'./a[{page_number % 10 + 1}]').click()
+        if (args.page_number - 1) % 10 > 1:
+            pagination_buttons[args.page_number % 10].send_keys(Keys.ENTER)
 
 
-def crawl_review_items(chromedriver: webdriver.Chrome) -> List[Dict[str, Any]]:
+def crawl_review_items(chromedriver: webdriver.Chrome, args: Namespace) -> List[Dict[str, Any]]:
     items = []
     sleep(2)
-    review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION)
-    review_items = review_section.find_elements_by_xpath(XPATH_REVIEW_ITEMS)
+    review_section = chromedriver.find_element_by_id(ID_REVIEW_SECTION_DICT[args.subdomain])
+    review_items = review_section.find_elements_by_xpath(XPATH_REVIEW_ITEMS_DICT[args.subdomain])
     assert len(review_items) == 20
     for item in review_items:
-        star = int(item.find_element_by_xpath('./div[1]/span[1]').text.replace('평점', ''))
-        date = item.find_element_by_xpath(f'./div[1]/span[4]').text
-        review = item.find_element_by_xpath('./div[2]/div[1]').text
-        items.append({'star': star, 'date': date, 'review': review})
+        star = int(item.find_element_by_xpath(XPATH_REVIEW_STAR_DICT[args.subdomain]).text.replace('평점', ''))
+        date = item.find_element_by_xpath(XPATH_REVIEW_DATE_DICT[args.subdomain]).text
+        review = item.find_element_by_xpath(XPATH_REVIEW_TEXT_DICT[args.subdomain]).text
+        items.append({'star': star, 'date': date, 'text': review})
     return items
 
 
@@ -98,29 +152,31 @@ def run_all(args: Namespace, page_numbers: List[int]) -> pd.DataFrame:
 
 def get_info(args: Namespace) -> Tuple[str, int]:
     chromedriver = open_chromedriver(args)
-    load_webpage(chromedriver)
-    print(chromedriver.current_url)
-    product_name = chromedriver.find_element_by_xpath(XPATH_PRODUCT_NAME).text
-    tablist = chromedriver.find_element_by_xpath(XPATH_TABLIST)
-    for tab in tablist.find_elements_by_xpath('./li'):
-        if '쇼핑몰리뷰' in tab.text:
-            num_review = int(tab.find_element_by_xpath('./a/em').text.replace(',', ''))
+    load_webpage(chromedriver, args)
+    product_name = chromedriver.find_element_by_xpath(XPATH_PRODUCT_NAME_DICT[args.subdomain]).text
+    tabs = chromedriver.find_elements_by_xpath(XPATH_TABS_DICT[args.subdomain])
+    for tab in tabs:
+        if TEXT_REVIEW_TAB_DICT[args.subdomain] in tab.text:
+            num_review_element = tab.find_element_by_xpath(XPATH_NUM_REVIEW_DICT[args.subdomain])
+            num_review = int(num_review_element.text.replace(',', ''))
+            chromedriver.quit()
             break
     else:
         raise Exception('Cannot find 쇼핑몰리뷰 tab.')
-    chromedriver.quit()
+        if not args.debug:
+            chromedriver.quit()
     return product_name, num_review
 
 
-def load_webpage(chromedriver: webdriver.Chrome):
-    chromedriver.get(f'{NAVER_SHOPPING_CATALOG_URL}/{args.catalog_id}')
-    if chromedriver.current_url == 'https://search.shopping.naver.com/blocked.html':
+def load_webpage(chromedriver: webdriver.Chrome, args: Namespace):
+    chromedriver.get(args.url)
+    if chromedriver.current_url == BLOCKED_URL[args.subdomain]:
         raise BlockedException()
 
 
 def open_chromedriver(args: Namespace) -> webdriver.Chrome:
     options = webdriver.ChromeOptions()
-    if not args.show_chrome_window:
+    if not args.debug:
         options.add_argument('--headless')
     if args.chromedriver_path:
         chromedriver = webdriver.Chrome(args.chromedriver_path, options=options)
@@ -131,10 +187,23 @@ def open_chromedriver(args: Namespace) -> webdriver.Chrome:
     return chromedriver
 
 
+class URLAction(Action):
+    def __call__(self, parser: ArgumentParser, namespace: Namespace, url: str,
+                 option_string: None) -> None:
+        for subdomain, pattern in URL_PATTERNS.items():
+            match = pattern.match(url)
+            if match:
+                setattr(namespace, 'url', url)
+                setattr(namespace, 'subdomain', subdomain)
+                break
+        else:
+            msg = f'Does not match to any pattern: {list(map(str, URL_PATTERNS.values()))}'
+            raise ArgumentError(self, msg)
+
+
 def parse_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument('catalog_id', type=int,
-                        help=f'From URL, {NAVER_SHOPPING_CATALOG_URL}/<CATALOG_ID>')
+    parser.add_argument('url', type=str, action=URLAction) # Detect subdomain
     parser.add_argument('-p', '--chromedriver-path', type=str)
     parser.add_argument('-s', '--sort-with', type=str, choices=['ranking', 'recent'],
                         default='recent')
@@ -142,7 +211,7 @@ def parse_args() -> Namespace:
     parser.add_argument('-m', '--max-page', type=int)
     parser.add_argument('-o', '--out-path', type=str,
                         help='The default path is "out/<PRODUCT_NAME>.xlsx"')
-    parser.add_argument('-w', '--show-chrome-window', action='store_true')
+    parser.add_argument('-d', '--debug', action='store_true')
     args = parser.parse_args()
     return args
 
